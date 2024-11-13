@@ -4,6 +4,13 @@ using IterTools
 using Flux
 using DifferentialEquations
 using DiffEqFlux
+# using Lux
+using Optimisers
+using Zygote
+using OrdinaryDiffEq
+using ComponentArrays
+using Statistics # to be able to use mean
+using Distributed
 
 function minZero(num::AbstractArray{<:Number})
     num[findall(x->x < 0, num)] .= 0
@@ -105,7 +112,10 @@ end
 function trainNetworkVal(trainData, valData, nGenes::Int, hiddenLayerNodes::Int,
     learningRate::Float64, nEpochs::Int, useGPU::Bool)
 
+    rng = Random.default_rng()
+
     if useGPU
+        # GPU support with Lux may require additional setup
         nn = Chain(Dense(nGenes, hiddenLayerNodes, relu),
                    Dense(hiddenLayerNodes, nGenes)) |> gpu
         model = NeuralODE(nn, (0.0f0, 1.0f0), Tsit5(),
@@ -116,44 +126,53 @@ function trainNetworkVal(trainData, valData, nGenes::Int, hiddenLayerNodes::Int,
         nn = Flux.Chain(Flux.Dense(nGenes, hiddenLayerNodes, relu),
                         Flux.Dense(hiddenLayerNodes, nGenes))
         println("got nn, creating model in trainNetworkVal")
-        model = DiffEqFlux.NeuralODE(nn, (0.0f0, 1.0f0), Tsit5(),
-                           save_everystep = false,
-                           reltol = 1e-3, abstol = 1e-3,
-                           save_start = false)
+        
+        # Define the NeuralODE
+        tspan = (0.0f0, 1.0f0)
+        model = NeuralODE(nn, tspan, Tsit5(), save_everystep=false, reltol=1e-3, abstol=1e-3, save_start=false)
         println("created model")
     end
 
-    println("creating opt")
-    opt = Flux.Adam(learningRate)
     println("creating loss")
-    loss(x,y) = mse(model(x)[1], y)
-    # loss(x,y) = mse(model(x),model(x))
+    # Loss function
+    function loss(x, y)
+        # Directly call the model, which in Flux will automatically use the parameters inside the model itself
+        y_pred = model(x)[1]
+        return Flux.Losses.mse(y_pred, y)
+    end
 
-    println("creating losses")
+    # Optimizer
+    opt = Flux.Adam(learningRate)
+
+    println("Initializing losses matrix")
     losses = Matrix{Float32}(undef, nEpochs, 2)
-    println("created losses")
-    for epoch = 1:nEpochs
-        println("for epoch")
-        for d in trainData
-            println("getting gradient")
-            gs = gradient(Flux.params(model)) do
-                println("getting l")
-                l = loss(d...)
-                println("got l")
-        end
-        println("optimizing")
-        Flux.Optimise.update!(opt, Flux.params(model), gs)
-     end
-     println("got losses")
-     # Report on train and validation error
-     losses[epoch,1]= meanLoss(trainData, model)
-     losses[epoch,2] = meanLoss(valData, model)
-     println("reported train and validation error")
-   end
 
-   println("returning model and losses")
-   return (model, losses)
+    println("Starting training")
+    for epoch in 1:nEpochs
+        # Training phase
+        println("Epoch $epoch training phase")
+        for (x, y) in trainData
+            gs = gradient(() -> loss(x, y), Flux.params(model))
+            # println("Type of ps: ", typeof(ps))
+            # println("Type of gs: ", typeof(gs))
+            Flux.Optimise.update!(opt, Flux.params(model), gs)
+        end
+    # Calculate and record training loss
+        println("calculating & recording training loss")
+        train_loss = mean([loss(x, y) for (x, y) in trainData])
+        losses[epoch, 1] = train_loss
+
+        # Calculate and record validation loss
+        println("calculating & recording validation loss")
+        val_loss = mean([loss(x, y) for (x, y) in valData])
+        losses[epoch, 2] = val_loss
+
+        println("Epoch $epoch: Training Loss = $(train_loss), Validation Loss = $(val_loss)")
+    end
+
+    return (model, losses)
 end
+
 
 """
 `trainRNAForecaster(expressionDataT0::Matrix{Float32}, expressionDataT1::Matrix{Float32};
@@ -213,53 +232,57 @@ function trainRNAForecaster(expressionDataT0::Matrix{Float32}, expressionDataT1:
      println("Subsetting data")
      if trainingProp < 1.0
         println("trainingProp < 1.0")
-         #subset the data into training and validation sets
-         #determine how many cells should be in training set
-         println("Determining how many cells should be in training set")
-         cellsInTraining = Int(round(size(expressionDataT0)[2]*trainingProp))
+        #subset the data into training and validation sets
+        #determine how many cells should be in training set
+        println("Determining how many cells should be in training set")
+        cellsInTraining = Int(round(size(expressionDataT0)[2]*trainingProp))
 
-         trainX = expressionDataT0[:,1:cellsInTraining]
-         trainY = expressionDataT1[:,1:cellsInTraining]
-         valX = expressionDataT0[:,cellsInTraining+1:size(expressionDataT0)[2]]
-         valY = expressionDataT1[:,cellsInTraining+1:size(expressionDataT0)[2]]
+        trainX = expressionDataT0[:,1:cellsInTraining]
+        trainY = expressionDataT1[:,1:cellsInTraining]
+        valX = expressionDataT0[:,cellsInTraining+1:size(expressionDataT0)[2]]
+        valY = expressionDataT1[:,cellsInTraining+1:size(expressionDataT0)[2]]
 
         println("Full trainX shape: ", size(trainX))
         println("Full trainY shape: ", size(trainY))
         println("Full valX shape: ", size(valX))
         println("Full valY shape: ", size(valY))
 
-         if useGPU
-             trainData = ([(trainX[:,i], trainY[:,i]) for i in partition(1:size(trainX)[2], batchsize)]) |> gpu
-             valData = ([(valX[:,i], valY[:,i]) for i in partition(1:size(valX)[2], batchsize)]) |> gpu
-         else
+        if useGPU
+            trainData = ([(trainX[:,i], trainY[:,i]) for i in partition(1:size(trainX)[2], batchsize)]) |> gpu
+            valData = ([(valX[:,i], valY[:,i]) for i in partition(1:size(valX)[2], batchsize)]) |> gpu
+        else
             # trainData = ([(trainX[:,i], trainY[:,i]) for i in partition(1:size(trainX)[2], batchsize)])
             # valData = ([(valX[:,i], valY[:,i]) for i in partition(1:size(valX)[2], batchsize)])
 
-            trainData = [(trainX[:, i:i+batchsize-1], trainY[:, i:i+batchsize-1]) for i in 1:batchsize:size(trainX, 2)]
+            trainData = [ 
+                (trainX[:, i:min(i+batchsize-1, size(trainX, 2))], 
+                 trainY[:, i:min(i+batchsize-1, size(trainY, 2))]) 
+                for i in 1:batchsize:size(trainX, 2) 
+            ]            
             valData = [(valX[:, i:i+batchsize-1], valY[:, i:i+batchsize-1]) for i in 1:batchsize:size(valX, 2)]            
-         end
+        end
 
-         # Print the shape of each batch
+        # Print the shape of each batch
         for (x_batch, y_batch) in trainData
             println("x_batch shape: ", size(x_batch))
             println("y_batch shape: ", size(y_batch))
         end
 
-         println("Training model...")
-         if checkStability
-             iter = 1
-             #repeat until model is stable or until user defined break point
-             while checkStability
-                 if iter > stabilityChecksBeforeFail
-                     error("Failed to find a stable solution after " * string(iter-1) * " attempts.
+        println("Training model...")
+        if checkStability
+            iter = 1
+            #repeat until model is stable or until user defined break point
+            while checkStability
+                if iter > stabilityChecksBeforeFail
+                    error("Failed to find a stable solution after " * string(iter-1) * " attempts.
                       Try increasing the stabilityChecksBeforeFail variable or, if a slightly less
                       stable solution is acceptable, increase the stabilityThreshold variable.")
-                 end
+                end
 
-                 #train the neural ODE
-                 println("training the neural ODE")
-                 trainedNet = trainNetworkVal(trainData, valData,
-                      nGenes, hiddenLayerNodes, learningRate, nEpochs, useGPU)
+                #train the neural ODE
+                println("training the neural ODE")
+                trainedNet = trainNetworkVal(trainData, valData,
+                    nGenes, hiddenLayerNodes, learningRate, nEpochs, useGPU)
 
                 #check model stability
                 println("Checking model stability")
@@ -366,7 +389,7 @@ function trainRNAForecaster(expressionDataT0::Matrix{Float32}, expressionDataT1:
  * stabilityChecksBeforeFail - when checking stability, how many times should the network
   be allowed to retrain before an error is thrown? Used to prevent an infinite loop.
  * useGPU - use a GPU to train the neural network? highly recommended for large data sets, if available
- """
+ 
  function createEnsembleForecaster(expressionDataT0::Matrix{Float32}, expressionDataT1::Matrix{Float32};
       nNetworks::Int = 5, trainingProp::Float64 = 0.8,
       hiddenLayerNodes::Int = 2*size(expressionDataT0)[1],
@@ -409,3 +432,4 @@ function trainRNAForecaster(expressionDataT0::Matrix{Float32}, expressionDataT1:
           return networks
       end
  end
+"""
