@@ -1,6 +1,3 @@
-using Flux
-using Flux.Optimise
-
 using Distributed
 using CSV
 using DataFrames
@@ -8,14 +5,10 @@ using DataFrames
 # for RNAForecaster
 using Random
 using IterTools
+using Flux
 using DifferentialEquations
-using DiffEqFlux
-using Lux
-using Optimisers
-using Zygote
-using OrdinaryDiffEq
-using ComponentArrays
-using Statistics # to be able to use mean
+
+println("Starting program")
 
 include("./trainRNAForecaster.jl") # to train the data
 
@@ -27,6 +20,8 @@ testT1 = log1p.(0.5f0 .* testT0)
 CSV.write("demo0_matrix.csv", DataFrame(testT0, :auto); header=false)
 CSV.write("demo1_matrix.csv", DataFrame(testT1, :auto); header=false)
 =#
+
+println("Reading expression data")
 
 # Read CSV files back as Float32 matrices
 t0_matrix = CSV.read("demo0_matrix.csv", DataFrame) |> Matrix{Float32}
