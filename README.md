@@ -1,4 +1,4 @@
-This is a fork of RNAForecaster by the [GGRN](https://github.com/ekernf01/ggrn) team. We made the minimum amount of changes we could in order to get it working in our environment. The original README follows.
+This is a fork of RNAForecaster by the [GGRN](https://github.com/ekernf01/ggrn) team. We made the minimum amount of changes we could in order to get it working in our environment. Installation instructions are in `src/train_demo/DEPENDENCIES.md`. The original README follows.
 
 # RNAForecaster.jl - Estimating Future Expression States on Short Time Scales
 
