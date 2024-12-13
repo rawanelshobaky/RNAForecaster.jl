@@ -1,3 +1,5 @@
+This is a fork of RNAForecaster by the [GGRN](https://github.com/ekernf01/ggrn) team. We made the minimum amount of changes we could in order to get it working in our environment. The original README follows.
+
 # RNAForecaster.jl - Estimating Future Expression States on Short Time Scales
 
 RNAForecaster is based on a neural network that is trained using ordinary differential equations solvers (neural ODEs). See https://arxiv.org/abs/1806.07366
